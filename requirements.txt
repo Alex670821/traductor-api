@@ -1,0 +1,7 @@
+flask
+gunicorn
+torch
+transformers
+openai-whisper
+ffmpeg-python
+

@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Model cache (transformers/torch/whisper)
+.cache/
+**/.cache/
+*.pt
+*.pth
+
+# OS / editor
+.vscode/
+.DS_Store
