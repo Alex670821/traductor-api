@@ -2,6 +2,7 @@ flask
 gunicorn
 torch
 transformers
+sentencepiece
+protobuf
 openai-whisper
 ffmpeg-python
-
