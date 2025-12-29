@@ -8,55 +8,37 @@ from typing import Optional
 from flask import Flask, request, jsonify
 from werkzeug.exceptions import RequestEntityTooLarge
 
-# (Opcional, recomendado si tu app móvil usa WebView o si luego haces panel web)
-# pip install flask-cors
 try:
     from flask_cors import CORS
     _HAS_CORS = True
 except Exception:
     _HAS_CORS = False
 
-# -------------------------------------------------------------------
-# Config
-# -------------------------------------------------------------------
 APP_NAME = "traductor-api"
-MODEL_ID = os.getenv("MODEL_ID", "americasnlp/mt5-base-es-quw")
-MAX_TEXT_LEN = int(os.getenv("MAX_TEXT_LEN", "300"))          # máximo caracteres de "texto"
-MAX_MODEL_LEN = int(os.getenv("MAX_MODEL_LEN", "200"))        # max_length para generación
-MAX_BODY_MB = int(os.getenv("MAX_BODY_MB", "1"))              # máximo body en MB (JSON)
+MODEL_ID = os.getenv("MODEL_ID", "facebook/nllb-200-distilled-600M")
+SRC_LANG = os.getenv("SRC_LANG", "spa_Latn")
+TGT_LANG = os.getenv("TGT_LANG", "quy_Latn")
+MAX_TEXT_LEN = int(os.getenv("MAX_TEXT_LEN", "300"))
+MAX_MODEL_LEN = int(os.getenv("MAX_MODEL_LEN", "200"))
+MAX_BODY_MB = int(os.getenv("MAX_BODY_MB", "1"))
 WARMUP_ON_START = os.getenv("WARMUP_ON_START", "true").lower() in ("1", "true", "yes")
-
-# Flask / Gunicorn
 PORT = int(os.getenv("PORT", "5000"))
 
-# -------------------------------------------------------------------
-# App & Logging
-# -------------------------------------------------------------------
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_MB * 1024 * 1024  # limita payload
+app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_MB * 1024 * 1024
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(APP_NAME)
 
 if _HAS_CORS:
-    # Si no lo necesitas, puedes borrar esto (no afecta Insomnia ni server-to-server).
     CORS(app)
 
-# -------------------------------------------------------------------
-# Estado del modelo
-# -------------------------------------------------------------------
 translator = None  # type: Optional[object]
 translator_loading = False
 translator_error = None  # type: Optional[str]
 translator_loaded_at = None  # type: Optional[float]
 
-
-ABECEDARIO_KICHWA = {
-    "a", "ch", "e", "h", "i", "k", "l", "ll", "m", "n", "ñ", "p", "q", "r", "s", "sh", "t", "u", "w", "y"
-}
+ABECEDARIO_KICHWA = {"a", "ch", "e", "h", "i", "k", "l", "ll", "m", "n", "ñ", "p", "q", "r", "s", "sh", "t", "u", "w", "y"}
 
 
 def _now() -> float:
@@ -64,17 +46,21 @@ def _now() -> float:
 
 
 def load_translator() -> object:
-    """
-    Carga el pipeline. Se importa transformers dentro para que el import del módulo sea más ligero.
-    """
-    from transformers import pipeline
-    return pipeline("translation", model=MODEL_ID)
+    from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+
+    tok = AutoTokenizer.from_pretrained(MODEL_ID)
+    mdl = AutoModelForSeq2SeqLM.from_pretrained(MODEL_ID)
+
+    tok.src_lang = SRC_LANG
+    pipe = pipeline("translation", model=mdl, tokenizer=tok, device=-1)
+
+    if not hasattr(tok, "lang_code_to_id") or TGT_LANG not in tok.lang_code_to_id:
+        raise ValueError(f"TGT_LANG '{TGT_LANG}' no existe en este modelo. Verifica SRC_LANG/TGT_LANG.")
+    pipe._forced_bos_token_id = tok.lang_code_to_id[TGT_LANG]
+    return pipe
 
 
 def warmup_translator_async() -> None:
-    """
-    Carga el traductor en un thread para no bloquear requests.
-    """
     global translator, translator_loading, translator_error, translator_loaded_at
 
     if translator_loading or translator is not None:
@@ -87,7 +73,7 @@ def warmup_translator_async() -> None:
         global translator, translator_loading, translator_error, translator_loaded_at
         t0 = _now()
         try:
-            logger.info(f"[WARMUP] Cargando modelo: {MODEL_ID}")
+            logger.info(f"[WARMUP] Cargando modelo: {MODEL_ID} | {SRC_LANG} -> {TGT_LANG}")
             translator = load_translator()
             translator_loaded_at = _now()
             logger.info(f"[WARMUP] Modelo cargado OK en {translator_loaded_at - t0:.2f}s")
@@ -101,9 +87,6 @@ def warmup_translator_async() -> None:
     threading.Thread(target=_job, daemon=True).start()
 
 
-# -------------------------------------------------------------------
-# Errores globales
-# -------------------------------------------------------------------
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_body(_e):
     return jsonify({"error": f"Payload demasiado grande. Máximo {MAX_BODY_MB}MB."}), 413
@@ -125,41 +108,30 @@ def unhandled_exception(e):
     return jsonify({"error": "Error inesperado en el servidor"}), 500
 
 
-# -------------------------------------------------------------------
-# Health & Info
-# -------------------------------------------------------------------
 @app.get("/")
 def root():
-    return jsonify({
-        "ok": True,
-        "service": APP_NAME,
-        "endpoints": ["/health", "/traducir"]
-    })
+    return jsonify({"ok": True, "service": APP_NAME, "endpoints": ["/health", "/traducir"]})
 
 
 @app.get("/health")
 def health():
-    """
-    Útil para monitoreo (Render/uptime robot).
-    No obliga a cargar el modelo, solo reporta estado.
-    """
     status = "ready" if translator is not None else ("loading" if translator_loading else "not_ready")
-    return jsonify({
-        "ok": True,
-        "service": APP_NAME,
-        "model": MODEL_ID,
-        "model_status": status,
-        "model_error": translator_error,
-        "model_loaded_at": translator_loaded_at
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "service": APP_NAME,
+            "model": MODEL_ID,
+            "src_lang": SRC_LANG,
+            "tgt_lang": TGT_LANG,
+            "model_status": status,
+            "model_error": translator_error,
+            "model_loaded_at": translator_loaded_at,
+        }
+    )
 
 
-# -------------------------------------------------------------------
-# API principal
-# -------------------------------------------------------------------
 @app.post("/traducir")
 def traducir():
-    # 1) Validación de JSON
     if not request.data:
         return jsonify({"error": "No se envió información"}), 400
 
@@ -181,53 +153,30 @@ def traducir():
     if len(texto_es) > MAX_TEXT_LEN:
         return jsonify({"error": f"Texto demasiado largo. Máximo {MAX_TEXT_LEN} caracteres."}), 400
 
-    # 2) Abecedario: respuesta inmediata
     if texto_es in ABECEDARIO_KICHWA:
         return jsonify({"texto_es": texto_es, "traduccion": texto_es}), 200
 
-    # 3) Si el modelo no está listo, no bloqueamos la request:
-    #    devolvemos 503 y el cliente reintenta en unos segundos.
     if translator is None:
-        # inicia warmup si no se hizo
         warmup_translator_async()
 
         if translator_loading:
-            return jsonify({
-                "error": "Modelo cargando. Intenta nuevamente en 20-60 segundos.",
-                "status": "loading"
-            }), 503
+            return jsonify({"error": "Modelo cargando. Intenta nuevamente en 20-60 segundos.", "status": "loading"}), 503
 
-        # si no está cargando y sigue None, es fallo real
-        return jsonify({
-            "error": "El modelo de traducción no está disponible",
-            "detail": translator_error
-        }), 500
+        return jsonify({"error": "El modelo de traducción no está disponible", "detail": translator_error}), 500
 
-    # 4) Traducción
     t0 = _now()
     try:
-        result = translator(texto_es, max_length=MAX_MODEL_LEN)
+        result = translator(texto_es, max_length=MAX_MODEL_LEN, forced_bos_token_id=translator._forced_bos_token_id)
         traduccion = result[0].get("translation_text", "").strip()
         ms = int((_now() - t0) * 1000)
-
         logger.info(f"OK traducir ({ms}ms): '{texto_es}' -> '{traduccion}'")
-
-        return jsonify({
-            "texto_es": texto_es,
-            "traduccion": traduccion,
-            "ms": ms
-        }), 200
-
+        return jsonify({"texto_es": texto_es, "traduccion": traduccion, "ms": ms}), 200
     except Exception as model_error:
         logger.error(f"Error traducción: {model_error}\n{traceback.format_exc()}")
         return jsonify({"error": "Error interno de traducción"}), 500
 
 
-# -------------------------------------------------------------------
-# Arranque: opcional warmup al iniciar el worker
-# -------------------------------------------------------------------
 if WARMUP_ON_START:
-    # en gunicorn puede ejecutarse por worker; igual está bien para evitar primera request lenta
     warmup_translator_async()
 
 
