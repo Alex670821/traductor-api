@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 
-CMD ["gunicorn", "-w", "1", "-b", "0.0.0.0:${PORT:-5000}", "app:app"]
+CMD ["sh", "-c", "gunicorn -w 1 -b 0.0.0.0:$PORT app:app"]
