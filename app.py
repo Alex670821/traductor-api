@@ -221,8 +221,11 @@ def traducir():
         return jsonify({"error": "Error interno de traducción"}), 500
 
 
-if WARMUP_ON_START:
-    model_mgr.warmup_async()
+@app.before_first_request
+def _warmup_once():
+    if WARMUP_ON_START:
+        model_mgr.warmup_async()
+
 
 
 if __name__ == "__main__":

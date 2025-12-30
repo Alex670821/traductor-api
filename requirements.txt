@@ -1,6 +1,9 @@
-flask==3.1.2
-gunicorn==23.0.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.2.2+cpu
 transformers==4.57.3
 sentencepiece==0.2.1
-protobuf==6.33.2
+flask==3.1.2
+gunicorn==23.0.0
 flask-cors==6.0.1
+protobuf==6.33.2
